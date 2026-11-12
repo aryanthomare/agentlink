@@ -2,11 +2,10 @@
 // agentlink hub: routes messages between agents, keeps the roster, queues for offline agents.
 import { once } from 'node:events'
 import { timingSafeEqual } from 'node:crypto'
-import { realpathSync } from 'node:fs'
 import { networkInterfaces } from 'node:os'
-import { pathToFileURL } from 'node:url'
 import { WebSocketServer } from 'ws'
 import { loadConfig, sanitize } from './lib/config.mjs'
+import { isMain } from './lib/format.mjs'
 import { CLOSE, DEFAULT_PORT, MAX_TEXT_BYTES, QUEUE_LIMIT, agentId, parseFrame } from './lib/protocol.mjs'
 
 const tokenMatches = (given, expected) => {
@@ -165,14 +164,7 @@ export async function runHub() {
   return hub
 }
 
-const isMain = () => {
-  try {
-    return import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href
-  } catch {
-    return false
-  }
-}
-if (isMain()) {
+if (isMain(import.meta.url)) {
   runHub().catch(err => {
     console.error(err.message)
     process.exit(1)
