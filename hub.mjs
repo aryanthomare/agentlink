@@ -49,10 +49,16 @@ export async function createHub({ token, port = DEFAULT_PORT, host = '0.0.0.0', 
     const name = sanitize(frame.name, 'agent')
     const id = agentId(name, sanitize(frame.machine, 'host'))
     const existing = agents.get(id)
-    if (existing && isLive(existing)) return reject(ws, 'name_taken', `${id} is already connected`, CLOSE.NAME_TAKEN)
+    if (existing && isLive(existing)) {
+      // Same client process reconnecting (e.g. after a Wi-Fi blip) before we noticed the old socket died.
+      const sameSession = typeof frame.session === 'string' && frame.session !== '' && frame.session === existing.session
+      if (!sameSession) return reject(ws, 'name_taken', `${id} is already connected`, CLOSE.NAME_TAKEN)
+      existing.ws.terminate()
+    }
     const entry = existing ?? { id, name, queue: [] }
     Object.assign(entry, {
       kind: frame.kind,
+      session: typeof frame.session === 'string' ? frame.session : undefined,
       summary: frame.summary ?? entry.summary ?? '',
       online: true,
       since: new Date().toISOString(),

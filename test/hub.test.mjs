@@ -58,6 +58,22 @@ test('rejects duplicate online id', async () => {
   assert.equal(first.ws.readyState, first.ws.OPEN)
 })
 
+test('same session takes over a stale connection', async () => {
+  const hello = { type: 'hello', v: 1, token: TOKEN, name: 'api', machine: 'pc-b', kind: 'test', session: 's1' }
+  const stale = await raw()
+  stale.sendFrame(hello)
+  await stale.next('welcome')
+  const fresh = await raw()
+  fresh.sendFrame(hello)
+  assert.equal((await fresh.next('welcome')).agent_id, 'api@pc-b')
+  await stale.closed
+
+  const a = await join({ name: 'front' })
+  a.sendFrame({ type: 'send', id: 's', to: 'api', text: 'x' })
+  assert.equal((await a.next('ack')).result, 'delivered')
+  assert.equal((await fresh.next('message')).id, 's')
+})
+
 test('delivers by bare name and acks', async () => {
   const a = await join({ name: 'front' })
   const b = await join({ name: 'api', machine: 'pc-b' })
