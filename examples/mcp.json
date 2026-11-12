@@ -1,0 +1,5 @@
+{
+  "mcpServers": {
+    "agentlink": { "command": "node", "args": ["/ABSOLUTE/PATH/agentlink/channel.mjs"] }
+  }
+}
