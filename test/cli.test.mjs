@@ -50,3 +50,38 @@ test('init writes config and prints token', async () => {
   assert.ok(out.stdout.includes(cfg.token))
   assert.match(out.stdout, /other PC/)
 })
+
+test('chat sends typed lines and prints replies', async t => {
+  const { spawn } = await import('node:child_process')
+  const hub = await createHub({ token: 'tok', port: 0 })
+  const web = new HubClient({ url: `ws://127.0.0.1:${hub.port}`, token: 'tok', name: 'web', machine: 'mac', kind: 'test' })
+  const welcomed = once(web, 'welcome')
+  web.start()
+  await welcomed
+  const env = { PATH: process.env.PATH, AGENTLINK_TOKEN: 'tok', AGENTLINK_HUB: `ws://127.0.0.1:${hub.port}`, HOME: mkdtempSync(join(tmpdir(), 'al-')) }
+  const chat = spawn(process.execPath, [CLI, 'chat'], { env })
+  t.after(async () => { chat.kill(); await web.stop(); await hub.close() })
+  let out = ''
+  chat.stdout.on('data', d => { out += d })
+  let err = ''
+  chat.stderr.on('data', d => { err += d })
+  for (let i = 0; i < 150 && !/chatting as/.test(err); i++) await new Promise(r => setTimeout(r, 20))
+  assert.match(err, /chatting as/, `chat did not start: ${err}`)
+
+  const got = once(web, 'message')
+  chat.stdin.write('@web hi from chat\n')
+  const [msg] = await got
+  assert.equal(msg.text, 'hi from chat')
+  await web.send({ to: msg.from, text: 'reply to chat', reply_to: msg.id })
+  for (let i = 0; i < 100 && !out.includes('reply to chat'); i++) await new Promise(r => setTimeout(r, 20))
+  assert.match(out, /\[web@mac\] reply to chat/)
+})
+
+test('init --token sets the shared token', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'al-'))
+  const out = await run(['init', '--hub', 'ws://10.0.0.9:7777', '--token', 'shared123'], { HOME: home })
+  assert.equal(out.code, 0, out.stderr)
+  const cfg = JSON.parse(readFileSync(join(home, '.agentlink', 'config.json'), 'utf8'))
+  assert.equal(cfg.token, 'shared123')
+  assert.doesNotMatch(out.stdout, /other PC/)
+})

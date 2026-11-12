@@ -99,3 +99,36 @@ test('end-to-end over stdio', async t => {
   const [msg] = await reply
   assert.equal(msg.text, 'pong')
 })
+
+test('does not push messages before Claude Code initializes, and keeps them queued', async t => {
+  const { spawn } = await import('node:child_process')
+  const hub = await createHub({ token: 'tok', port: 0 })
+  const url = `ws://127.0.0.1:${hub.port}`
+  t.after(() => hub.close())
+  // register web@mac once so the hub knows it, then go offline
+  const web = new HubClient({ url, token: 'tok', name: 'web', machine: 'mac', kind: 'test' })
+  const w = once(web, 'welcome'); web.start(); await w; await web.stop()
+  const peer = new HubClient({ url, token: 'tok', name: 'api', machine: 'test', kind: 'test' })
+  const p = once(peer, 'welcome'); peer.start(); await p
+  t.after(() => peer.stop())
+  assert.equal(await peer.send({ to: 'web', text: 'early' }), 'queued')
+
+  const env = { PATH: process.env.PATH, HOME: mkdtempSync(join(tmpdir(), 'al-')), AGENTLINK_TOKEN: 'tok', AGENTLINK_HUB: url, AGENTLINK_NAME: 'web', AGENTLINK_HOST: 'mac' }
+  const child = spawn(process.execPath, [join(ROOT, 'channel.mjs')], { env, stdio: ['pipe', 'pipe', 'ignore'] })
+  let stdout = ''
+  child.stdout.on('data', d => { stdout += d })
+  await new Promise(r => setTimeout(r, 1500))
+  child.kill()
+  await once(child, 'exit')
+  assert.equal(stdout, '', 'channel wrote to stdout before initialize')
+
+  // the message must still be waiting for a properly initialized session
+  const transport = new StdioClientTransport({ command: process.execPath, args: [join(ROOT, 'channel.mjs')], env, stderr: 'pipe' })
+  const client = new Client({ name: 'test', version: '0.0.0' })
+  const arrived = new Promise(resolve => {
+    client.fallbackNotificationHandler = async n => { if (n.method === 'notifications/claude/channel') resolve(n) }
+  })
+  t.after(() => client.close())
+  await client.connect(transport)
+  assert.equal((await arrived).params.content, 'early')
+})

@@ -51,3 +51,12 @@ test('initConfig creates once', () => {
   assert.equal(second.created, false)
   assert.equal(second.token, first.token)
 })
+
+test('normalizes a bare hub address', () => {
+  const home = freshHome()
+  const hub = h => loadConfig({ env: { AGENTLINK_TOKEN: 't', AGENTLINK_HUB: h }, home, cwd: '/x/y', hostname: 'h' }).hub
+  assert.equal(hub('192.168.1.5'), 'ws://192.168.1.5:7777')
+  assert.equal(hub('192.168.1.5:8000'), 'ws://192.168.1.5:8000')
+  assert.equal(hub('ws://h:1'), 'ws://h:1')
+  assert.equal(hub(' ws://10.0.0.2:7777/ '), 'ws://10.0.0.2:7777/')
+})

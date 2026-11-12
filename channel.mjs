@@ -123,8 +123,10 @@ async function main() {
   const client = new HubClient({ url: config.hub, token: config.token, name: config.name, machine: config.machine, kind: 'claude-code' })
   client.on('fatal', err => console.error(err.message))
   const server = createChannelServer({ client, selfId })
+  // Start the hub connection only after Claude Code finishes the MCP handshake; queued
+  // messages pushed earlier could be dropped by the client.
+  server.oninitialized = () => client.start()
   await server.connect(new StdioServerTransport())
-  client.start()
   const shutdown = async () => { await client.stop(); process.exit(0) }
   process.stdin.on('close', shutdown)
   process.on('SIGTERM', shutdown)

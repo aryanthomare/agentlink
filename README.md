@@ -31,12 +31,13 @@ claude (docs) ─────┼── agentlink hub ┼─ any other agent / sc
 cd agentlink
 npm install
 npm link            # optional: puts an `agentlink` command on your PATH (else use `node cli.mjs`)
-agentlink init --hub ws://<THIS PC's LAN IP>:7777
+agentlink init --hub <THIS PC's LAN IP>
 agentlink hub
 ```
 
 `agentlink hub` prints the addresses it can be reached at (`reachable at ws://192.168.x.x:7777`).
-Leave it running. `init` prints a **token** — you'll need it on the other PC.
+Leave it running. `init` prints a **token** and the exact command to run on the other PC.
+(The hub address can be written as `192.168.1.20`, `192.168.1.20:7777` or `ws://192.168.1.20:7777`.)
 
 Firewall: the first time the hub starts, allow Node to accept incoming connections
 (macOS: *Allow*; Windows: tick *Private networks* and *Allow access*). On Windows make sure the
@@ -50,11 +51,10 @@ Copy this folder over (or `git clone` it), then:
 cd agentlink
 npm install
 npm link            # optional
-agentlink init --hub ws://<HUB PC's LAN IP>:7777
+agentlink init --hub <HUB PC's LAN IP> --token <TOKEN FROM THE HUB PC>
 ```
 
-Open `~/.agentlink/config.json` (Windows: `%USERPROFILE%\.agentlink\config.json`) and replace
-`"token"` with the token from the hub PC. Check it works:
+This writes `~/.agentlink/config.json` (Windows: `%USERPROFILE%\.agentlink\config.json`). Check it works:
 
 ```bash
 agentlink list
@@ -104,12 +104,16 @@ or to answer a question another agent sent — it won't send "thanks"/"got it" r
 don't loop. It checks with you before doing anything destructive or outside its area just because
 another agent asked.
 
-From any terminal you can also:
+You can also join from a terminal yourself:
 
 ```bash
-agentlink send api "hello from the terminal"
-agentlink listen
+agentlink chat        # prints incoming messages; type "@api hello" to send
+agentlink send api "one-off message"
 ```
+
+Use `chat` when you expect an answer — replies go back to the terminal that sent the message.
+A one-off `send` registers as `cli` (or `cli-2` if `chat` is already running), so its replies wait in
+the hub for that name.
 
 ### Skip the permission prompt (optional)
 
@@ -134,7 +138,7 @@ Environment variables override `~/.agentlink/config.json`:
 
 ## Troubleshooting
 
-- **`/mcp` shows agentlink as failed** — usually no token: run `agentlink init` / check `~/.agentlink/config.json`.
+- **`/mcp` shows agentlink as failed** — usually no token (`agentlink init`), or an unreadable `~/.agentlink/config.json`. Run `node /ABSOLUTE/PATH/agentlink/channel.mjs` in a terminal to see the error.
 - **"hub unreachable at ws://…"** — the hub isn't running, the IP is wrong (`agentlink hub` prints the right one), or the hub PC's firewall is blocking port 7777. Test from the other PC with `agentlink list`.
 - **"hub rejected the token"** — the tokens on the two PCs differ.
 - **Tools work but messages never appear in the session** — the session wasn't started with
@@ -142,6 +146,9 @@ Environment variables override `~/.agentlink/config.json`:
   disabled for your org. If you've forced Claude Code onto its v2 MCP runtime, also set
   `MCP_PROTOCOL_NEGOTIATION=legacy`.
 - **Agent shows up as `name-2`** — another session is already using that name on that machine.
+- **Delivery after a dropped connection** — a session confirms each message it receives. If the
+  connection dies before that, the hub re-sends the message when the session reconnects. A session
+  that loses Wi‑Fi notices within about 50 seconds and reconnects by itself.
 
 ## Security
 

@@ -54,7 +54,8 @@ export async function createHub({ token, port = DEFAULT_PORT, host = '0.0.0.0', 
       if (!sameSession) return reject(ws, 'name_taken', `${id} is already connected`, CLOSE.NAME_TAKEN)
       existing.ws.terminate()
     }
-    const entry = existing ?? { id, name, queue: [] }
+    const entry = existing ?? { id, name, queue: [], inflight: new Map() }
+    requeueInflight(entry)
     Object.assign(entry, {
       kind: frame.kind,
       session: typeof frame.session === 'string' ? frame.session : undefined,
@@ -66,7 +67,19 @@ export async function createHub({ token, port = DEFAULT_PORT, host = '0.0.0.0', 
     agents.set(id, entry)
     ws.agent = entry
     sendJson(ws, { type: 'welcome', agent_id: id })
-    for (const msg of entry.queue.splice(0)) sendJson(ws, msg)
+    for (const msg of entry.queue.splice(0)) deliver(entry, msg)
+  }
+
+  // Delivered-but-unconfirmed messages go back to the front of the queue, oldest first.
+  const requeueInflight = entry => {
+    if (!entry.inflight.size) return
+    entry.queue.unshift(...entry.inflight.values())
+    entry.inflight.clear()
+    if (entry.queue.length > QUEUE_LIMIT) entry.queue.splice(0, entry.queue.length - QUEUE_LIMIT)
+  }
+  const deliver = (entry, msg) => {
+    entry.inflight.set(msg.id, msg)
+    sendJson(entry.ws, msg)
   }
 
   const handleSend = (ws, frame) => {
@@ -84,7 +97,7 @@ export async function createHub({ token, port = DEFAULT_PORT, host = '0.0.0.0', 
       sent_at: new Date().toISOString(),
     }
     if (isLive(agent)) {
-      sendJson(agent.ws, msg)
+      deliver(agent, msg)
       return ack('delivered')
     }
     agent.queue.push(msg)
@@ -112,6 +125,7 @@ export async function createHub({ token, port = DEFAULT_PORT, host = '0.0.0.0', 
         case 'send': return handleSend(ws, frame)
         case 'list': return sendJson(ws, { type: 'roster', agents: roster() })
         case 'status': ws.agent.summary = frame.summary; return
+        case 'received': ws.agent.inflight.delete(frame.id); return
         default: return reject(ws, 'bad_frame', 'already said hello', CLOSE.BAD_FRAME)
       }
     })
@@ -123,6 +137,7 @@ export async function createHub({ token, port = DEFAULT_PORT, host = '0.0.0.0', 
         entry.online = false
         entry.ws = null
         entry.since = new Date().toISOString()
+        requeueInflight(entry)
       }
     })
     ws.on('error', () => {})

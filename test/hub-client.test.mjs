@@ -109,3 +109,73 @@ test('bad token is fatal', async () => {
   assert.equal(fatals, 1)
   assert.equal(c.connected, false)
 })
+
+test('reconnects when the hub goes silent', async t => {
+  const { WebSocketServer } = await import('ws')
+  const wss = new WebSocketServer({ port: 0, host: '127.0.0.1' })
+  await once(wss, 'listening')
+  let conns = 0
+  wss.on('connection', ws => {
+    conns++
+    ws.on('message', raw => {
+      if (JSON.parse(String(raw)).type === 'hello') ws.send(JSON.stringify({ type: 'welcome', agent_id: 's@m' }))
+    })
+  })
+  t.after(() => { for (const ws of wss.clients) ws.terminate(); wss.close() })
+  await started(client(wss.address().port, { name: 's', idleTimeoutMs: 300 }))
+  await sleep(1000)
+  assert.ok(conns >= 2, `expected a reconnect, saw ${conns} connection(s)`)
+})
+
+test('drops duplicate message ids', async t => {
+  const { WebSocketServer } = await import('ws')
+  const wss = new WebSocketServer({ port: 0, host: '127.0.0.1' })
+  await once(wss, 'listening')
+  const msg = JSON.stringify({ type: 'message', id: 'dup', from: 'x@m', to: 's@m', text: 'hi', sent_at: new Date().toISOString() })
+  wss.on('connection', ws => {
+    ws.on('message', raw => {
+      if (JSON.parse(String(raw)).type !== 'hello') return
+      ws.send(JSON.stringify({ type: 'welcome', agent_id: 's@m' }))
+      ws.send(msg)
+      ws.send(msg)
+    })
+  })
+  t.after(() => { for (const ws of wss.clients) ws.terminate(); wss.close() })
+  const c = client(wss.address().port, { name: 's' })
+  let count = 0
+  c.on('message', () => count++)
+  await started(c)
+  await sleep(100)
+  assert.equal(count, 1)
+})
+
+test('confirms receipt so the hub does not redeliver', async () => {
+  const hub = await startHub()
+  const a = await started(client(hub.port, { name: 'a' }))
+  const b = await started(client(hub.port, { name: 'b' }))
+  const got = once(b, 'message')
+  await a.send({ to: 'b', text: 'once' })
+  await got
+  await sleep(30)
+  await b.stop()
+  const b2 = client(hub.port, { name: 'b' })
+  let count = 0
+  b2.on('message', () => count++)
+  await started(b2)
+  await sleep(150)
+  assert.equal(count, 0)
+})
+
+test('confirm:false leaves messages for the next connection', async () => {
+  const hub = await startHub()
+  const a = await started(client(hub.port, { name: 'a' }))
+  const peek = await started(client(hub.port, { name: 'b', confirm: false }))
+  const got = once(peek, 'message')
+  await a.send({ to: 'b', text: 'keep me' })
+  await got
+  await peek.stop()
+  const b = client(hub.port, { name: 'b' })
+  const again = once(b, 'message')
+  b.start()
+  assert.equal((await again)[0].text, 'keep me')
+})

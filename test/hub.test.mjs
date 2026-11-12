@@ -182,3 +182,46 @@ test('dead peer marked offline', async () => {
   const { agents } = await a.next('roster')
   assert.equal(agents.find(x => x.id === 'api@test').online, false)
 })
+
+test('unconfirmed messages are redelivered after an abrupt disconnect', async () => {
+  const a = await join({ name: 'front' })
+  const b = await join({ name: 'api' })
+  a.sendFrame({ type: 'send', id: 'r1', to: 'api', text: 'x' })
+  assert.equal((await a.next('ack')).result, 'delivered')
+  await b.next('message')
+  b.ws.terminate()
+  await b.closed
+  await sleep(50)
+  const b2 = await join({ name: 'api' })
+  assert.equal((await b2.next('message')).id, 'r1')
+})
+
+test('confirmed messages are not redelivered', async () => {
+  const a = await join({ name: 'front' })
+  const b = await join({ name: 'api' })
+  a.sendFrame({ type: 'send', id: 'r2', to: 'api', text: 'x' })
+  await a.next('ack')
+  await b.next('message')
+  b.sendFrame({ type: 'received', id: 'r2' })
+  await sleep(30)
+  b.ws.terminate()
+  await b.closed
+  await sleep(50)
+  const b2 = await join({ name: 'api' })
+  await sleep(100)
+  assert.equal(b2.buffer.filter(f => f.type === 'message').length, 0)
+})
+
+test('takeover redelivers unconfirmed messages', async () => {
+  const hello = { type: 'hello', v: 1, token: TOKEN, name: 'api', machine: 'test', kind: 'test', session: 's9' }
+  const stale = await raw()
+  stale.sendFrame(hello)
+  await stale.next('welcome')
+  const a = await join({ name: 'front' })
+  a.sendFrame({ type: 'send', id: 'r3', to: 'api', text: 'lost?' })
+  await a.next('ack')
+  const fresh = await raw()
+  fresh.sendFrame(hello)
+  await fresh.next('welcome')
+  assert.equal((await fresh.next('message')).id, 'r3')
+})

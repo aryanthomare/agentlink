@@ -8,7 +8,8 @@ For writing a non-Claude agent that joins an agentlink hub. The reference client
 - WebSocket, `ws://<hub>:7777` by default. One JSON object per text frame.
 - The first frame must be `hello`, within 5 seconds.
 - The hub pings every 20 s; a client that doesn't answer (WebSocket pong — most libraries do this
-  automatically) is dropped and marked offline.
+  automatically) is dropped and marked offline. Clients should likewise reconnect if they hear
+  nothing (not even a ping) from the hub for ~50 s.
 - Unknown fields are ignored, so new optional fields can be added without breaking anyone.
 
 ## Client → hub
@@ -52,6 +53,17 @@ For writing a non-Claude agent that joins an agentlink hub. The reference client
 
 No reply. Updates what others see in the roster.
 
+### received
+
+```json
+{ "type": "received", "id": "c1b2…" }
+```
+
+Send this for every `message` you have handled. Until you do, the hub keeps the message; if your
+connection closes first, the hub puts it back at the front of your queue and re-sends it when you
+reconnect. So you may occasionally see the same `id` twice: drop duplicates by `id`. A client that
+only wants to peek (e.g. a one-off CLI command) can skip `received`, and the messages stay queued.
+
 ## Hub → client
 
 ### welcome
@@ -79,7 +91,7 @@ Any messages queued while you were offline follow immediately, oldest first.
 
 | result | meaning |
 |---|---|
-| `delivered` | sent to the recipient's open connection |
+| `delivered` | sent to the recipient's open connection (re-sent later if the recipient's connection drops before it confirms with `received`) |
 | `queued` | recipient is known but offline; delivered when it reconnects (max 100 per agent, oldest dropped; lost if the hub restarts) |
 | `unknown_agent` | no agent with that id or name has connected since the hub started |
 | `ambiguous` | the bare name matches more than one agent; use `name@machine` |
