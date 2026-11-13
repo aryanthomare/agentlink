@@ -76,7 +76,7 @@ test('end-to-end over stdio', async t => {
   await client.connect(transport)
   assert.deepEqual(client.getServerCapabilities().experimental?.['claude/channel'], {})
   const { tools } = await client.listTools()
-  assert.deepEqual(tools.map(x => x.name).sort(), ['list_agents', 'send_message', 'set_status'])
+  assert.deepEqual(tools.map(x => x.name).sort(), ['list_agents', 'send_message', 'set_name', 'set_status'])
 
   const welcomed = once(peer, 'welcome')
   peer.start()
@@ -131,4 +131,119 @@ test('does not push messages before Claude Code initializes, and keeps them queu
   t.after(() => client.close())
   await client.connect(transport)
   assert.equal((await arrived).params.content, 'early')
+})
+
+// --- desktop (inbox) mode -------------------------------------------------------------
+const { execFile } = await import('node:child_process')
+const runWait = path => new Promise(resolve => {
+  execFile(process.execPath, [join(ROOT, 'cli.mjs'), 'wait', path], { timeout: 10000 }, (err, stdout, stderr) =>
+    resolve({ code: err ? err.code ?? 'killed' : 0, stdout, stderr }))
+})
+
+async function desktopChannel(t, url, home) {
+  const transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [join(ROOT, 'channel.mjs')],
+    env: { PATH: process.env.PATH, HOME: home, AGENTLINK_TOKEN: 'tok', AGENTLINK_HUB: url, AGENTLINK_NAME: 'web', AGENTLINK_HOST: 'mac', CLAUDE_CODE_ENTRYPOINT: 'claude-desktop' },
+    stderr: 'pipe',
+  })
+  const client = new Client({ name: 'test', version: '0.0.0' })
+  const notes = []
+  client.fallbackNotificationHandler = async n => { notes.push(n) }
+  await client.connect(transport)
+  const instructions = client.getInstructions()
+  const path = /wait "([^"]+)"/.exec(instructions)?.[1]
+  return { client, notes, instructions, path, close: () => client.close() }
+}
+
+async function onlineAs(peer, id) {
+  for (let i = 0; i < 100; i++) {
+    if ((await peer.list()).some(a => a.id === id && a.online)) return
+    await new Promise(r => setTimeout(r, 50))
+  }
+  throw new Error(`${id} never came online`)
+}
+
+test('desktop mode: messages arrive through agentlink wait, not channel pushes', async t => {
+  const hub = await createHub({ token: 'tok', port: 0 })
+  const url = `ws://127.0.0.1:${hub.port}`
+  const peer = new HubClient({ url, token: 'tok', name: 'api', machine: 'test', kind: 'test' })
+  const p = once(peer, 'welcome'); peer.start(); await p
+  const home = mkdtempSync(join(tmpdir(), 'al-'))
+  let ch = await desktopChannel(t, url, home)
+  t.after(async () => { await ch.close(); await peer.stop(); await hub.close() })
+
+  assert.ok(ch.path, `no wait command in instructions:\n${ch.instructions}`)
+  assert.match(ch.instructions, /run_in_background/)
+  assert.match(ch.instructions, /never send acknowledg/i)
+  await onlineAs(peer, 'web@mac')
+
+  assert.equal(await peer.send({ to: 'web', text: 'ping\nsecond line' }), 'delivered')
+  const out = await runWait(ch.path)
+  assert.equal(out.code, 0, out.stderr)
+  assert.match(out.stdout, /from api@test/)
+  assert.match(out.stdout, /ping\nsecond line/)
+  assert.match(out.stdout, /msg_id/)
+  assert.match(out.stdout, /again/)
+  assert.equal(ch.notes.filter(n => n.method === 'notifications/claude/channel').length, 0)
+
+  // confirmed: a restarted session does not get it again
+  await ch.close()
+  ch = await desktopChannel(t, url, home)
+  await onlineAs(peer, 'web@mac')
+  await peer.send({ to: 'web', text: 'two' })
+  const again = await runWait(ch.path)
+  assert.doesNotMatch(again.stdout, /ping/)
+  assert.match(again.stdout, /two/)
+})
+
+test('desktop mode: messages nobody waited for survive a session restart', async t => {
+  const hub = await createHub({ token: 'tok', port: 0 })
+  const url = `ws://127.0.0.1:${hub.port}`
+  const peer = new HubClient({ url, token: 'tok', name: 'api', machine: 'test', kind: 'test' })
+  const p = once(peer, 'welcome'); peer.start(); await p
+  const home = mkdtempSync(join(tmpdir(), 'al-'))
+  let ch = await desktopChannel(t, url, home)
+  t.after(async () => { await ch.close(); await peer.stop(); await hub.close() })
+  await onlineAs(peer, 'web@mac')
+  assert.equal(await peer.send({ to: 'web', text: 'unseen' }), 'delivered')
+  await new Promise(r => setTimeout(r, 200))
+  await ch.close()
+  ch = await desktopChannel(t, url, home)
+  const out = await runWait(ch.path)
+  assert.match(out.stdout, /unseen/)
+})
+
+test('set_name renames the session on the hub', async t => {
+  const hub = await createHub({ token: 'tok', port: 0 })
+  const url = `ws://127.0.0.1:${hub.port}`
+  const peer = new HubClient({ url, token: 'tok', name: 'api', machine: 'test', kind: 'test' })
+  const p = once(peer, 'welcome'); peer.start(); await p
+  const ch = await desktopChannel(t, url, mkdtempSync(join(tmpdir(), 'al-')))
+  t.after(async () => { await ch.close(); await peer.stop(); await hub.close() })
+  await onlineAs(peer, 'web@mac')
+  const res = await ch.client.callTool({ name: 'set_name', arguments: { name: 'UI Team' } })
+  assert.match(res.content[0].text, /ui-team@mac/)
+  await onlineAs(peer, 'ui-team@mac')
+})
+
+test('wait without an inbox path prints usage', async () => {
+  const out = await new Promise(resolve => execFile(process.execPath, [join(ROOT, 'cli.mjs'), 'wait'], (err, stdout, stderr) => resolve({ code: err?.code ?? 0, stderr })))
+  assert.equal(out.code, 1)
+  assert.match(out.stderr, /usage: agentlink wait/)
+})
+
+test('a replaced wait says not to restart it', async t => {
+  const hub = await createHub({ token: 'tok', port: 0 })
+  const url = `ws://127.0.0.1:${hub.port}`
+  const ch = await desktopChannel(t, url, mkdtempSync(join(tmpdir(), 'al-')))
+  t.after(async () => { await ch.close(); await hub.close() })
+  const older = runWait(ch.path)
+  await new Promise(r => setTimeout(r, 300))
+  const newer = runWait(ch.path)
+  const out = await older
+  assert.equal(out.code, 0, out.stderr)
+  assert.match(out.stdout, /took over.*do not start another/)
+  await ch.close()
+  assert.match((await newer).stderr, /inbox closed/)
 })

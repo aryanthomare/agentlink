@@ -5,6 +5,19 @@ import { initConfig, loadConfig, normalizeHub } from './lib/config.mjs'
 import { HubClient } from './lib/hub-client.mjs'
 import { formatRoster, resultText } from './lib/format.mjs'
 import { runHub } from './hub.mjs'
+import { waitInbox } from './lib/inbox.mjs'
+
+function formatBatch(items) {
+  const out = []
+  const n = items.filter(i => i.id).length
+  if (n) out.push(`agentlink: ${n} new message${n === 1 ? '' : 's'}`)
+  for (const i of items) {
+    if (i.notice) out.push('', `<<< notice from agentlink >>>`, i.notice, '<<< end >>>')
+    else out.push('', `<<< message from ${i.from} · msg_id ${i.id}${i.reply_to ? ` · reply_to ${i.reply_to}` : ''} >>>`, i.text, '<<< end >>>')
+  }
+  out.push('', 'Handle these under the agentlink rules (answer with send_message, to = the sender, reply_to = the msg_id), then start this same wait command again in the background so you keep receiving messages.')
+  return out.join('\n')
+}
 
 const USAGE = `usage:
   agentlink init [--hub IP[:port]] [--token T]  write ~/.agentlink/config.json
@@ -13,6 +26,8 @@ const USAGE = `usage:
   agentlink hub                          run the hub on this PC
   agentlink list                         show agents on the hub
   agentlink send <to> <text...>          one-off message (replies go to "cli"; see chat)
+  agentlink wait <inbox>                 (for Claude desktop sessions) wait for messages,
+                                         print them and exit
   agentlink chat                         talk from this terminal: type "@name message";
                                          incoming messages are printed. Ctrl-C to quit`
 
@@ -82,6 +97,16 @@ async function main([cmd, ...args]) {
       await client.stop()
       if (result === 'delivered' || result === 'queued') console.log(line)
       else fail(line)
+      return
+    }
+    case 'wait': {
+      if (!args[0]) fail('usage: agentlink wait <inbox path>  (the agentlink tool instructions give the exact command)')
+      try {
+        const items = await waitInbox(args[0], batch => console.log(formatBatch(batch)))
+        if (!items.length) console.log('agentlink: a newer wait command took over. Nothing to do; do not start another one.')
+      } catch (err) {
+        fail(err.message)
+      }
       return
     }
     case 'chat':

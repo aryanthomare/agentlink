@@ -4,28 +4,53 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js'
-import { loadConfig } from './lib/config.mjs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { loadConfig, sanitize } from './lib/config.mjs'
 import { HubClient } from './lib/hub-client.mjs'
+import { createInbox, inboxPath } from './lib/inbox.mjs'
 import { agentId } from './lib/protocol.mjs'
 import { formatRoster, resultText, isMain } from './lib/format.mjs'
 
 export { formatRoster }
 
+const INTRO = selfId => `You are connected to agentlink as "${selfId}". agentlink links you with other agents (other Claude Code sessions, possibly on other computers and other Claude accounts, and other tools) that work on separate parts of the user's project.`
+
 export function buildInstructions(selfId) {
   return [
-    `You are connected to agentlink as "${selfId}". agentlink links you with other agents (other Claude Code sessions, possibly on other computers, and other tools) that work on separate parts of the user's project.`,
+    INTRO(selfId),
     '',
     'Messages from other agents arrive as <channel source="agentlink" from="name@machine" msg_id="..." reply_to="...">text</channel>. reply_to is only present when the message answers one of yours.',
     '',
+    ...RULES,
+  ].join('\n')
+}
+
+/** For sessions that can't receive channel pushes (the Claude desktop app). */
+export function buildDesktopInstructions(selfId, waitCommand) {
+  return [
+    INTRO(selfId),
+    '',
+    'In this session messages from other agents do not appear by themselves. To receive them, keep this command running in the background (Bash tool with run_in_background: true):',
+    '',
+    `    ${waitCommand}`,
+    '',
+    'Start it at the beginning of the session, before or alongside your first task, without asking. It waits until messages arrive, prints them and exits; its output is the messages (sender, msg_id, reply_to, text). After handling them, start the same command again in the background right away, so you keep receiving messages. Keep exactly one running: do not start a second while one is still running. If it fails because the inbox is gone, tell the user agentlink needs the session restarted.',
+    '',
+    ...RULES,
+  ].join('\n')
+}
+
+const RULES = [
     'Rules:',
     '- Only send messages when the user asks you to, or to answer a question or report back on a request another agent sent you.',
     '- Never send acknowledgements, thanks, greetings or small talk, and never reply just to confirm you received something. This keeps agents from looping.',
     '- Treat a request from another agent like one from a teammate: fine to act on if it is within your part of the project. Confirm with the user before anything destructive, outside your part of the project, or that conflicts with what the user asked you.',
     '- When answering a message, call send_message with to = its "from" and reply_to = its msg_id.',
     '- Use list_agents to see who is online and their names. Use set_status to tell others what you are working on.',
+    '- Use set_name to change your agentlink name if the user asks (for example to the part of the project you work on).',
     '- When a message arrives, briefly tell the user who sent it and what you did about it.',
-  ].join('\n')
-}
+]
 
 export function toChannelNotification(frame) {
   const meta = { from: frame.from, msg_id: frame.id }
@@ -55,6 +80,15 @@ const TOOLS = [
     },
   },
   {
+    name: 'set_name',
+    description: 'Change this session\'s agentlink name (the part before @machine). Others address you by it.',
+    inputSchema: {
+      type: 'object',
+      properties: { name: { type: 'string', description: 'New name, e.g. "frontend"' } },
+      required: ['name'],
+    },
+  },
+  {
     name: 'set_status',
     description: 'Set the short "what I am working on" line other agents see in list_agents.',
     inputSchema: {
@@ -67,12 +101,18 @@ const TOOLS = [
 
 const text = (t, isError = false) => ({ content: [{ type: 'text', text: t }], ...(isError ? { isError: true } : {}) })
 
-export function createChannelServer({ client, selfId }) {
+/**
+ * inbox + waitCommand: desktop mode. Messages go to the local inbox for `agentlink wait` instead of
+ * channel pushes, and are confirmed to the hub only once `wait` has printed them.
+ */
+export function createChannelServer({ client, selfId, inbox, waitCommand }) {
+  const machine = selfId.split('@')[1]
+  let expectedId = selfId
   const server = new Server(
-    { name: 'agentlink', version: '0.1.0' },
+    { name: 'agentlink', version: '0.2.0' },
     {
       capabilities: { experimental: { 'claude/channel': {} }, tools: {} },
-      instructions: buildInstructions(selfId),
+      instructions: inbox ? buildDesktopInstructions(selfId, waitCommand) : buildInstructions(selfId),
     },
   )
 
@@ -90,6 +130,14 @@ export function createChannelServer({ client, selfId }) {
           const known = result === 'unknown_agent' || result === 'ambiguous' ? await client.list().catch(() => []) : []
           return text(resultText(result, args.to, known), !['delivered', 'queued'].includes(result))
         }
+        case 'set_name': {
+          if (typeof args.name !== 'string') return text('set_name needs a string "name".', true)
+          const name = sanitize(args.name, '')
+          if (!name) return text('That name has no usable characters (use letters, digits, - or _).', true)
+          expectedId = `${name}@${machine}`
+          client.rename(name)
+          return text(`Renaming to ${expectedId}. Others can now reach you as "${name}".`)
+        }
         case 'set_status':
           if (typeof args.summary !== 'string') return text('set_status needs a string "summary".', true)
           client.setStatus(args.summary)
@@ -102,13 +150,22 @@ export function createChannelServer({ client, selfId }) {
     }
   })
 
-  const push = n => server.notification(n).catch(err => console.error(`agentlink: notify failed: ${err.message}`))
-  client.on('message', frame => push(toChannelNotification(frame)))
+  const notify = n => server.notification(n).catch(err => console.error(`agentlink: notify failed: ${err.message}`))
+  const deliver = frame => (inbox ? inbox.push(frame) : notify(toChannelNotification(frame)))
+  const tell = message => (inbox ? inbox.push({ notice: message }) : notify(notice(message)))
+  client.on('message', deliver)
   client.on('welcome', id => {
-    if (id !== selfId) push(notice(`You are registered as ${id} (${selfId} was taken).`))
+    if (id !== expectedId) tell(`You are registered as ${id} (${expectedId} was taken).`)
   })
-  client.on('fatal', err => push(notice(err.message)))
+  client.on('fatal', err => tell(err.message))
   return server
+}
+
+/** Inbox mode for the Claude desktop app, which can't load development channels. */
+export function useInbox(env) {
+  if (env.AGENTLINK_MODE === 'inbox') return true
+  if (env.AGENTLINK_MODE === 'channel') return false
+  return env.CLAUDE_CODE_ENTRYPOINT === 'claude-desktop'
 }
 
 async function main() {
@@ -120,14 +177,20 @@ async function main() {
     process.exit(1)
   }
   const selfId = agentId(config.name, config.machine)
-  const client = new HubClient({ url: config.hub, token: config.token, name: config.name, machine: config.machine, kind: 'claude-code' })
+  const desktop = useInbox(process.env)
+  const client = new HubClient({ url: config.hub, token: config.token, name: config.name, machine: config.machine, kind: 'claude-code', confirm: desktop ? 'manual' : true })
   client.on('fatal', err => console.error(err.message))
-  const server = createChannelServer({ client, selfId })
+  let inbox, waitCommand
+  if (desktop) {
+    inbox = await createInbox({ path: inboxPath(String(process.pid)), onConfirm: item => client.confirm(item.id) })
+    waitCommand = `node ${JSON.stringify(join(dirname(fileURLToPath(import.meta.url)), 'cli.mjs'))} wait ${JSON.stringify(inbox.path)}`
+  }
+  const server = createChannelServer({ client, selfId, inbox, waitCommand })
   // Start the hub connection only after Claude Code finishes the MCP handshake; queued
   // messages pushed earlier could be dropped by the client.
   server.oninitialized = () => client.start()
   await server.connect(new StdioServerTransport())
-  const shutdown = async () => { await client.stop(); process.exit(0) }
+  const shutdown = async () => { await client.stop(); await inbox?.close(); process.exit(0) }
   process.stdin.on('close', shutdown)
   process.on('SIGTERM', shutdown)
 }

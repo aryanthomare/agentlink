@@ -12,16 +12,16 @@ claude (docs) ─────┼── agentlink hub ┼─ any other agent / sc
 
 - One PC runs the **hub** (a tiny WebSocket server).
 - Each Claude Code session runs the **agentlink channel** (an MCP server Claude Code starts for you).
-  It gives Claude three tools — `list_agents`, `send_message`, `set_status` — and pushes incoming
-  messages into the session as they arrive.
+  It gives Claude four tools (`list_agents`, `send_message`, `set_status`, `set_name`) and puts
+  incoming messages in front of the session as they arrive.
 - Agents are named `name@machine`, e.g. `frontend@macbook`. You can address them by bare name when it's unique.
 - Messages to an agent that's offline are held by the hub (up to 100, until the hub restarts).
 
 ## Requirements
 
 - **Node.js 20+** on both PCs (`node --version`).
-- **Claude Code CLI** in a terminal (`claude --version`). Custom channels don't load inside the
-  Claude desktop app — sessions must be started from a terminal.
+- **Claude Code**: the CLI in a terminal (`claude --version`), or the Code tab of the Claude desktop
+  app (see [Claude desktop app](#claude-desktop-app)).
 - Claude **Pro / Max / Ultra** accounts work as is. On a **Team / Enterprise** account an Owner must
   enable channels (claude.ai → Organization settings → Claude Code → Channels).
 
@@ -90,6 +90,22 @@ development**. Below the banner you should see
 
 Without `AGENTLINK_NAME` the session is named after its folder.
 
+### Claude desktop app
+
+The Code tab of the Claude desktop app picks up the agentlink server from step 3 by itself. Nothing
+else to install. Just start a session in your project folder.
+
+The desktop app can't load development channels, so agentlink works a little differently there:
+Claude runs `agentlink wait` as a background command. It sits idle until a message arrives, then
+exits with the message, which wakes the session. Claude handles it and starts `wait` again. You'll
+see this as a background task in the session. Messages count as received only once `wait` has
+printed them, so nothing is lost if the session closes first.
+
+- The session is named after its folder. To change it, tell Claude: "set your agentlink name to frontend".
+- Claude starts `wait` with its first task, so send the session one message (anything) after
+  opening it. Until then it doesn't hear other agents.
+- Allow the `wait` command once when Claude asks (or add `Bash(node:*)` to your allow rules).
+
 ## 5. Use it
 
 Talk to Claude normally:
@@ -121,7 +137,7 @@ Claude asks before each `send_message`. To allow agentlink tools without asking,
 project's `.claude/settings.json`:
 
 ```json
-{ "permissions": { "allow": ["mcp__agentlink__send_message", "mcp__agentlink__list_agents", "mcp__agentlink__set_status"] } }
+{ "permissions": { "allow": ["mcp__agentlink__send_message", "mcp__agentlink__list_agents", "mcp__agentlink__set_status", "mcp__agentlink__set_name"] } }
 ```
 
 ## Configuration
@@ -135,6 +151,7 @@ Environment variables override `~/.agentlink/config.json`:
 | `AGENTLINK_PORT` | port the hub listens on | `7777` |
 | `AGENTLINK_NAME` | this agent's name | folder name |
 | `AGENTLINK_HOST` | machine part of the id | short hostname |
+| `AGENTLINK_MODE` | `inbox` (desktop-app style `wait`) or `channel` (pushes) | `inbox` in the desktop app, else `channel` |
 
 ## Troubleshooting
 
@@ -145,6 +162,8 @@ Environment variables override `~/.agentlink/config.json`:
   `--dangerously-load-development-channels server:agentlink`, or (Team/Enterprise) channels are
   disabled for your org. If you've forced Claude Code onto its v2 MCP runtime, also set
   `MCP_PROTOCOL_NEGOTIATION=legacy`.
+- **Desktop session never reacts to messages** — ask it "are you running agentlink wait?". It has
+  to be running in the background; Claude restarts it after each message.
 - **Agent shows up as `name-2`** — another session is already using that name on that machine.
 - **Delivery after a dropped connection** — a session confirms each message it receives. If the
   connection dies before that, the hub re-sends the message when the session reconnects. A session
