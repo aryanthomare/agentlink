@@ -205,7 +205,9 @@ async function main() {
   let inbox, waitCommand
   if (desktop) {
     inbox = await createInbox({ path: inboxPath(String(process.pid)), onConfirm: item => client.confirm(item.id) })
-    waitCommand = `node ${JSON.stringify(join(dirname(fileURLToPath(import.meta.url)), 'cli.mjs'))} wait ${JSON.stringify(inbox.path)}`
+    // Works the same in bash, zsh, Git Bash, PowerShell and cmd: forward slashes, no backslash escapes.
+    const cli = join(dirname(fileURLToPath(import.meta.url)), 'cli.mjs').replaceAll('\\', '/')
+    waitCommand = `node "${cli}" wait ${process.pid}`
   }
   const server = createChannelServer({ client, selfId, inbox, waitCommand })
   // Start the hub connection only after Claude Code finishes the MCP handshake; queued

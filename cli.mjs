@@ -5,7 +5,7 @@ import { initConfig, loadConfig, normalizeHub } from './lib/config.mjs'
 import { HubClient } from './lib/hub-client.mjs'
 import { formatRoster, resultText } from './lib/format.mjs'
 import { runHub } from './hub.mjs'
-import { waitInbox } from './lib/inbox.mjs'
+import { waitInbox, inboxPath } from './lib/inbox.mjs'
 
 function formatBatch(items) {
   const out = []
@@ -26,7 +26,7 @@ const USAGE = `usage:
   agentlink hub                          run the hub on this PC
   agentlink list                         show agents on the hub
   agentlink send <to> <text...>          one-off message (replies go to "cli"; see chat)
-  agentlink wait <inbox>                 (for Claude desktop sessions) wait for messages,
+  agentlink wait <inbox id>              (for Claude desktop sessions) wait for messages,
                                          print them and exit
   agentlink chat                         talk from this terminal: type "@name message";
                                          incoming messages are printed. Ctrl-C to quit`
@@ -100,9 +100,10 @@ async function main([cmd, ...args]) {
       return
     }
     case 'wait': {
-      if (!args[0]) fail('usage: agentlink wait <inbox path>  (the agentlink tool instructions give the exact command)')
+      if (!args[0]) fail('usage: agentlink wait <inbox id>  (the agentlink tool instructions give the exact command)')
       try {
-        const items = await waitInbox(args[0], batch => console.log(formatBatch(batch)))
+        const path = /^\d+$/.test(args[0]) ? inboxPath(args[0]) : args[0]
+        const items = await waitInbox(path, batch => console.log(formatBatch(batch)))
         if (!items.length) console.log('agentlink: a newer wait command took over. Nothing to do; do not start another one.')
       } catch (err) {
         fail(err.message)

@@ -152,8 +152,8 @@ test('does not push messages before Claude Code initializes, and keeps them queu
 
 // --- desktop (inbox) mode -------------------------------------------------------------
 const { execFile } = await import('node:child_process')
-const runWait = path => new Promise(resolve => {
-  execFile(process.execPath, [join(ROOT, 'cli.mjs'), 'wait', path], { timeout: 10000 }, (err, stdout, stderr) =>
+const runWait = (id, home) => new Promise(resolve => {
+  execFile(process.execPath, [join(ROOT, 'cli.mjs'), 'wait', id], { timeout: 10000, env: { PATH: process.env.PATH, HOME: home } }, (err, stdout, stderr) =>
     resolve({ code: err ? err.code ?? 'killed' : 0, stdout, stderr }))
 })
 
@@ -169,8 +169,9 @@ async function desktopChannel(t, url, home) {
   client.fallbackNotificationHandler = async n => { notes.push(n) }
   await client.connect(transport)
   const instructions = client.getInstructions()
-  const path = /wait "([^"]+)"/.exec(instructions)?.[1]
-  return { client, notes, instructions, path, close: () => client.close() }
+  // shell-neutral: forward slashes, no backslashes, inbox given by number
+  const id = /wait (\d+)\s*$/m.exec(instructions)?.[1]
+  return { client, notes, instructions, id, home, close: () => client.close() }
 }
 
 async function onlineAs(peer, id) {
@@ -190,13 +191,14 @@ test('desktop mode: messages arrive through agentlink wait, not channel pushes',
   let ch = await desktopChannel(t, url, home)
   t.after(async () => { await ch.close(); await peer.stop(); await hub.close() })
 
-  assert.ok(ch.path, `no wait command in instructions:\n${ch.instructions}`)
+  assert.ok(ch.id, `no wait command in instructions:\n${ch.instructions}`)
+  assert.doesNotMatch(/^ {4}node .*$/m.exec(ch.instructions)[0], /\\/)
   assert.match(ch.instructions, /run_in_background/)
   assert.match(ch.instructions, /never send acknowledg/i)
   await onlineAs(peer, 'web@mac')
 
   assert.equal(await peer.send({ to: 'web', text: 'ping\nsecond line' }), 'delivered')
-  const out = await runWait(ch.path)
+  const out = await runWait(ch.id, ch.home)
   assert.equal(out.code, 0, out.stderr)
   assert.match(out.stdout, /from api@test/)
   assert.match(out.stdout, /ping\nsecond line/)
@@ -209,7 +211,7 @@ test('desktop mode: messages arrive through agentlink wait, not channel pushes',
   ch = await desktopChannel(t, url, home)
   await onlineAs(peer, 'web@mac')
   await peer.send({ to: 'web', text: 'two' })
-  const again = await runWait(ch.path)
+  const again = await runWait(ch.id, ch.home)
   assert.doesNotMatch(again.stdout, /ping/)
   assert.match(again.stdout, /two/)
 })
@@ -227,7 +229,7 @@ test('desktop mode: messages nobody waited for survive a session restart', async
   await new Promise(r => setTimeout(r, 200))
   await ch.close()
   ch = await desktopChannel(t, url, home)
-  const out = await runWait(ch.path)
+  const out = await runWait(ch.id, ch.home)
   assert.match(out.stdout, /unseen/)
 })
 
@@ -255,9 +257,9 @@ test('a replaced wait says not to restart it', async t => {
   const url = `ws://127.0.0.1:${hub.port}`
   const ch = await desktopChannel(t, url, mkdtempSync(join(tmpdir(), 'al-')))
   t.after(async () => { await ch.close(); await hub.close() })
-  const older = runWait(ch.path)
+  const older = runWait(ch.id, ch.home)
   await new Promise(r => setTimeout(r, 300))
-  const newer = runWait(ch.path)
+  const newer = runWait(ch.id, ch.home)
   const out = await older
   assert.equal(out.code, 0, out.stderr)
   assert.match(out.stdout, /took over.*do not start another/)
