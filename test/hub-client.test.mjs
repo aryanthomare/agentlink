@@ -179,3 +179,66 @@ test('confirm:false leaves messages for the next connection', async () => {
   b.start()
   assert.equal((await again)[0].text, 'keep me')
 })
+
+test('manual confirm: unconfirmed messages are re-sent to the next connection', async () => {
+  const { connect } = await import('./helpers.mjs')
+  const hub = await startHub()
+  const a = await started(client(hub.port, { name: 'a' }))
+  const b = await started(client(hub.port, { name: 'b', confirm: 'manual' }))
+  const got = once(b, 'message')
+  await a.send({ to: 'b', text: 'keep me' })
+  await got
+  await b.stop()
+  const raw = await connect(hub.port, { token: TOKEN, name: 'b', machine: 'm' })
+  assert.equal((await raw.next('message')).text, 'keep me')
+  await raw.close()
+})
+
+test('manual confirm: confirm() stops re-delivery', async () => {
+  const { connect } = await import('./helpers.mjs')
+  const hub = await startHub()
+  const a = await started(client(hub.port, { name: 'a' }))
+  const b = await started(client(hub.port, { name: 'b', confirm: 'manual' }))
+  const got = once(b, 'message')
+  await a.send({ to: 'b', text: 'done' })
+  const [msg] = await got
+  b.confirm(msg.id)
+  await sleep(100)
+  await b.stop()
+  const raw = await connect(hub.port, { token: TOKEN, name: 'b', machine: 'm' })
+  await assert.rejects(raw.next('message', 300), /timed out/)
+  await raw.close()
+})
+
+test('manual confirm: a confirm made while offline is sent when the hub re-sends', async () => {
+  const { connect } = await import('./helpers.mjs')
+  const hub = await startHub()
+  const a = await started(client(hub.port, { name: 'a' }))
+  const b = await started(client(hub.port, { name: 'b', confirm: 'manual' }))
+  let count = 0
+  b.on('message', () => count++)
+  const got = once(b, 'message')
+  await a.send({ to: 'b', text: 'once' })
+  const [msg] = await got
+  await b.stop()
+  b.confirm(msg.id)
+  await started(b)
+  await sleep(150)
+  assert.equal(count, 1, 'duplicate was emitted')
+  await b.stop()
+  const raw = await connect(hub.port, { token: TOKEN, name: 'b', machine: 'm' })
+  await assert.rejects(raw.next('message', 300), /timed out/)
+  await raw.close()
+})
+
+test('rename reconnects under the new name', async () => {
+  const hub = await startHub()
+  const a = await started(client(hub.port, { name: 'a' }))
+  const o = await started(client(hub.port, { name: 'o' }))
+  const welcomed = once(a, 'welcome')
+  a.rename('z')
+  assert.equal((await welcomed)[0], 'z@m')
+  const roster = await o.list()
+  assert.equal(roster.find(r => r.id === 'a@m').online, false)
+  assert.equal(roster.find(r => r.id === 'z@m').online, true)
+})
