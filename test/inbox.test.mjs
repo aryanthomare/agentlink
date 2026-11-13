@@ -7,7 +7,11 @@ import { join } from 'node:path'
 import { createInbox, waitInbox, inboxPath } from '../lib/inbox.mjs'
 import { sleep } from './helpers.mjs'
 
-const tmpPath = () => join(mkdtempSync(join(tmpdir(), 'al-inbox-')), 'x.sock')
+// Windows can only listen on named pipes, not socket files.
+let pipes = 0
+const tmpPath = () => process.platform === 'win32'
+  ? `\\\\.\\pipe\\al-test-${process.pid}-${pipes++}`
+  : join(mkdtempSync(join(tmpdir(), 'al-inbox-')), 'x.sock')
 const msg = (id, text = id) => ({ type: 'message', id, from: 'api@b', to: 'web@a', text, sent_at: '' })
 
 test('inboxPath per platform', () => {
