@@ -4,6 +4,7 @@
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js'
+import { execFileSync } from 'node:child_process'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { loadConfig, sanitize } from './lib/config.mjs'
@@ -161,11 +162,31 @@ export function createChannelServer({ client, selfId, inbox, waitCommand }) {
   return server
 }
 
-/** Inbox mode for the Claude desktop app, which can't load development channels. */
-export function useInbox(env) {
+/**
+ * Inbox mode (`agentlink wait`) unless Claude Code was started with the channels flag naming
+ * agentlink: only then do channel pushes reach the session. The desktop app, Remote Control
+ * sessions and a plain `claude` drop pushes silently. parentCommand is the command line of the
+ * Claude Code process that started us, or null if it couldn't be read.
+ */
+export function useInbox(env, parentCommand) {
   if (env.AGENTLINK_MODE === 'inbox') return true
   if (env.AGENTLINK_MODE === 'channel') return false
-  return env.CLAUDE_CODE_ENTRYPOINT === 'claude-desktop'
+  if (typeof parentCommand === 'string') {
+    return !(/--(dangerously-load-development-)?channels\b/.test(parentCommand) && /agentlink/.test(parentCommand))
+  }
+  return env.CLAUDE_CODE_ENTRYPOINT !== 'cli'
+}
+
+function parentCommandLine() {
+  try {
+    const opts = { encoding: 'utf8', timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }
+    const out = process.platform === 'win32'
+      ? execFileSync('powershell.exe', ['-NoProfile', '-Command', `(Get-CimInstance Win32_Process -Filter "ProcessId=${process.ppid}").CommandLine`], opts)
+      : execFileSync('ps', ['-o', 'command=', '-p', String(process.ppid)], opts)
+    return out.trim() || null
+  } catch {
+    return null
+  }
 }
 
 async function main() {
@@ -177,7 +198,8 @@ async function main() {
     process.exit(1)
   }
   const selfId = agentId(config.name, config.machine)
-  const desktop = useInbox(process.env)
+  const desktop = useInbox(process.env, parentCommandLine())
+  console.error(`agentlink: ${desktop ? 'inbox (agentlink wait)' : 'channel push'} mode`)
   const client = new HubClient({ url: config.hub, token: config.token, name: config.name, machine: config.machine, kind: 'claude-code', confirm: desktop ? 'manual' : true })
   client.on('fatal', err => console.error(err.message))
   let inbox, waitCommand

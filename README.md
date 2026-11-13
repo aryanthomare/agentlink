@@ -21,7 +21,7 @@ claude (docs) ─────┼── agentlink hub ┼─ any other agent / sc
 
 - **Node.js 20+** on both PCs (`node --version`).
 - **Claude Code**: the CLI in a terminal (`claude --version`), or the Code tab of the Claude desktop
-  app (see [Claude desktop app](#claude-desktop-app)).
+  app (see [Claude desktop app](#claude-desktop-app-and-remote-control)).
 - Claude **Pro / Max / Ultra** accounts work as is. On a **Team / Enterprise** account an Owner must
   enable channels (claude.ai → Organization settings → Claude Code → Channels).
 
@@ -90,7 +90,11 @@ development**. Below the banner you should see
 
 Without `AGENTLINK_NAME` the session is named after its folder.
 
-### Claude desktop app
+### Claude desktop app and Remote Control
+
+The same applies to Remote Control sessions (`claude rc`, or sessions started from claude.ai or the
+phone app) and to a plain `claude` started without the channels flag: none of them can receive
+pushes, so agentlink uses `wait` in all of them automatically.
 
 The Code tab of the Claude desktop app picks up the agentlink server from step 3 by itself. Nothing
 else to install. Just start a session in your project folder.
@@ -151,7 +155,7 @@ Environment variables override `~/.agentlink/config.json`:
 | `AGENTLINK_PORT` | port the hub listens on | `7777` |
 | `AGENTLINK_NAME` | this agent's name | folder name |
 | `AGENTLINK_HOST` | machine part of the id | short hostname |
-| `AGENTLINK_MODE` | `inbox` (desktop-app style `wait`) or `channel` (pushes) | `inbox` in the desktop app, else `channel` |
+| `AGENTLINK_MODE` | `inbox` (`agentlink wait`) or `channel` (pushes) | `channel` when Claude Code was started with the channels flag naming agentlink, else `inbox` |
 
 ## Troubleshooting
 

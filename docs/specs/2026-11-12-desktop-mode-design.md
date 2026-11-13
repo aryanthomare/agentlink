@@ -33,7 +33,7 @@ dropping messages.
 
 ## Design
 
-- **Mode.** The channel uses inbox mode when `CLAUDE_CODE_ENTRYPOINT=claude-desktop` (set by the
+- **Mode.** The channel uses channel pushes only when the Claude Code process that started it was launched with `--channels` or `--dangerously-load-development-channels` naming agentlink (read from its parent's command line). Everywhere else (desktop app, Remote Control, plain `claude`) it uses inbox mode. If the command line can't be read, `CLAUDE_CODE_ENTRYPOINT=cli` means pushes. `AGENTLINK_MODE=inbox|channel` overrides. (First draft keyed on `CLAUDE_CODE_ENTRYPOINT=claude-desktop`, set by the
   desktop app) or `AGENTLINK_MODE=inbox`. `AGENTLINK_MODE=channel` forces today's behaviour.
 - **Inbox.** A local socket owned by the channel process: `~/.agentlink/run/<pid>.sock` on
   macOS/Linux and `\\.\pipe\agentlink-<pid>` on Windows. Messages wait in memory. A `wait` client

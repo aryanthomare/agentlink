@@ -7,7 +7,7 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
-import { toChannelNotification, buildInstructions, formatRoster } from '../channel.mjs'
+import { toChannelNotification, buildInstructions, formatRoster, useInbox } from '../channel.mjs'
 import { createHub } from '../hub.mjs'
 import { HubClient } from '../lib/hub-client.mjs'
 
@@ -31,6 +31,22 @@ test('instructions carry the rules', () => {
   assert.ok(text.includes('list_agents'))
   assert.match(text, /never send acknowledg/i)
   assert.match(text, /confirm with the user/i)
+})
+
+test('pushes only when Claude Code was started with the agentlink channel flag', () => {
+  const flagged = 'claude --dangerously-load-development-channels server:agentlink'
+  assert.equal(useInbox({ CLAUDE_CODE_ENTRYPOINT: 'cli' }, flagged), false)
+  assert.equal(useInbox({ CLAUDE_CODE_ENTRYPOINT: 'cli' }, 'claude --channels plugin:agentlink@mine'), false)
+  assert.equal(useInbox({ CLAUDE_CODE_ENTRYPOINT: 'cli' }, 'claude'), true, 'terminal without the flag')
+  assert.equal(useInbox({ CLAUDE_CODE_ENTRYPOINT: 'cli' }, 'claude --dangerously-load-development-channels server:other'), true)
+  assert.equal(useInbox({ CLAUDE_CODE_ENTRYPOINT: 'sdk-cli' }, '/x/claude --print --sdk-url https://a/b'), true, 'remote control')
+  assert.equal(useInbox({ CLAUDE_CODE_ENTRYPOINT: 'claude-desktop' }, '/x/claude'), true, 'desktop app')
+  // parent command unknown (e.g. lookup failed): fall back to the entrypoint
+  assert.equal(useInbox({ CLAUDE_CODE_ENTRYPOINT: 'cli' }, null), false)
+  assert.equal(useInbox({ CLAUDE_CODE_ENTRYPOINT: 'sdk-cli' }, null), true)
+  // explicit override wins
+  assert.equal(useInbox({ AGENTLINK_MODE: 'channel', CLAUDE_CODE_ENTRYPOINT: 'claude-desktop' }, 'claude'), false)
+  assert.equal(useInbox({ AGENTLINK_MODE: 'inbox' }, flagged), true)
 })
 
 test('roster formatting', () => {
@@ -57,6 +73,7 @@ test('end-to-end over stdio', async t => {
       AGENTLINK_HUB: `ws://127.0.0.1:${hub.port}`,
       AGENTLINK_NAME: 'web',
       AGENTLINK_HOST: 'mac',
+      AGENTLINK_MODE: 'channel',
     },
     stderr: 'pipe',
   })
@@ -113,7 +130,7 @@ test('does not push messages before Claude Code initializes, and keeps them queu
   t.after(() => peer.stop())
   assert.equal(await peer.send({ to: 'web', text: 'early' }), 'queued')
 
-  const env = { PATH: process.env.PATH, HOME: mkdtempSync(join(tmpdir(), 'al-')), AGENTLINK_TOKEN: 'tok', AGENTLINK_HUB: url, AGENTLINK_NAME: 'web', AGENTLINK_HOST: 'mac' }
+  const env = { PATH: process.env.PATH, HOME: mkdtempSync(join(tmpdir(), 'al-')), AGENTLINK_TOKEN: 'tok', AGENTLINK_HUB: url, AGENTLINK_NAME: 'web', AGENTLINK_HOST: 'mac', AGENTLINK_MODE: 'channel' }
   const child = spawn(process.execPath, [join(ROOT, 'channel.mjs')], { env, stdio: ['pipe', 'pipe', 'ignore'] })
   let stdout = ''
   child.stdout.on('data', d => { stdout += d })
